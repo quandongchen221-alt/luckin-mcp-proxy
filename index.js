@@ -1,22 +1,22 @@
 const express = require('express');
 const https = require('https');
-const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const TOKEN = process.env.LUCKIN_TOKEN;
-const TARGET = 'mcp.lkcoffee.com';
+const TARGET_HOST = 'gwmcp.lkcoffee.com';
+const TARGET_PATH = '/order/user/mcp';
 
 app.use('/', (req, res) => {
   const options = {
-    hostname: TARGET,
+    hostname: TARGET_HOST,
     port: 443,
-    path: req.url,
+    path: TARGET_PATH,
     method: req.method,
     headers: {
       ...req.headers,
       'Authorization': `Bearer ${TOKEN}`,
-      'host': TARGET,
+      'host': TARGET_HOST,
     }
   };
 
@@ -28,7 +28,7 @@ app.use('/', (req, res) => {
   req.pipe(proxy, { end: true });
 
   proxy.on('error', (err) => {
-    console.error('代理错误:', err);
+    console.error('错误:', err);
     res.status(500).end();
   });
 });
