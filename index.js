@@ -7,29 +7,131 @@ const TOKEN = process.env.LUCKIN_TOKEN;
 const TARGET_HOST = 'gwmcp.lkcoffee.com';
 const TARGET_PATH = '/order/user/mcp';
 
-app.use('/', (req, res) => {
-  const options = {
-    hostname: TARGET_HOST,
-    port: 443,
-    path: TARGET_PATH,
-    method: req.method,
-    headers: {
-      ...req.headers,
-      'Authorization': `Bearer ${TOKEN}`,
-      'host': TARGET_HOST,
-    }
-  };
+const TOOL_METADATA = {
+  queryShopList: {
+    title: '查询瑞幸门店',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  },
+  searchProductForMcp: {
+    title: '搜索瑞幸商品',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  },
+  switchProduct: {
+    title: '切换商品规格',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  },
+  queryProductDetailInfo: {
+    title: '查询商品详情',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  },
+  previewOrder: {
+    title: '预览订单',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  },
+  createOrder: {
+    title: '创建瑞幸订单',
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  queryOrderDetailInfo: {
+    title: '查询订单详情',
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  },
+  cancelOrder: {
+    title: '取消瑞幸订单',
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  },
+};
 
-  const proxy = https.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
-    proxyRes.pipe(res, { end: true });
+function addChatGptToolMetadata(payload) {
+  if (!payload || !payload.result || !Array.isArray(payload.result.tools)) return payload;
+
+  payload.result.tools = payload.result.tools.map((tool) => {
+    const metadata = TOOL_METADATA[tool.name];
+    return metadata ? { ...tool, ...metadata } : tool;
   });
+  return payload;
+}
 
-  req.pipe(proxy, { end: true });
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
 
-  proxy.on('error', (err) => {
-    console.error('错误:', err);
-    res.status(500).end();
+app.use((req, res) => {
+  if (!TOKEN) {
+    console.error('LUCKIN_TOKEN is not configured');
+    return res.status(503).json({ error: 'Server is not configured' });
+  }
+
+  const requestChunks = [];
+  req.on('data', (chunk) => requestChunks.push(chunk));
+  req.on('end', () => {
+    const requestBody = Buffer.concat(requestChunks);
+    let rpcMethod = 'unknown';
+
+    try {
+      rpcMethod = JSON.parse(requestBody.toString('utf8')).method || 'unknown';
+    } catch {
+      // GET requests and malformed payloads are forwarded unchanged.
+    }
+
+    console.log(`${req.method} ${req.path} MCP method=${rpcMethod}`);
+
+    const headers = { ...req.headers };
+    delete headers.host;
+    delete headers.connection;
+    delete headers['content-length'];
+    delete headers.authorization;
+    delete headers.origin;
+    delete headers.referer;
+    headers.authorization = `Bearer ${TOKEN}`;
+    headers.host = TARGET_HOST;
+    if (requestBody.length > 0) headers['content-length'] = requestBody.length;
+
+    const proxy = https.request(
+      {
+        hostname: TARGET_HOST,
+        port: 443,
+        path: TARGET_PATH,
+        method: req.method,
+        headers,
+      },
+      (proxyRes) => {
+        const responseChunks = [];
+        proxyRes.on('data', (chunk) => responseChunks.push(chunk));
+        proxyRes.on('end', () => {
+          let responseBody = Buffer.concat(responseChunks);
+          const responseHeaders = { ...proxyRes.headers };
+          delete responseHeaders.connection;
+          delete responseHeaders['transfer-encoding'];
+          delete responseHeaders['content-length'];
+
+          if (rpcMethod === 'tools/list') {
+            try {
+              const payload = addChatGptToolMetadata(JSON.parse(responseBody.toString('utf8')));
+              responseBody = Buffer.from(JSON.stringify(payload));
+              responseHeaders['content-type'] = 'application/json; charset=utf-8';
+            } catch (error) {
+              console.error('Could not annotate tools/list response:', error.message);
+            }
+          }
+
+          responseHeaders['content-length'] = responseBody.length;
+          res.writeHead(proxyRes.statusCode || 502, responseHeaders);
+          res.end(responseBody);
+        });
+      }
+    );
+
+    proxy.setTimeout(30000, () => {
+      proxy.destroy(new Error('Upstream request timed out'));
+    });
+
+    proxy.on('error', (error) => {
+      console.error(`Upstream error for ${rpcMethod}:`, error.message);
+      if (!res.headersSent) res.status(502).json({ error: 'Upstream MCP request failed' });
+    });
+
+    proxy.end(requestBody);
   });
 });
 
