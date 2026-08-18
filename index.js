@@ -62,6 +62,23 @@ app.use((req, res) => {
     return res.status(503).json({ error: 'Server is not configured' });
   }
 
+  // The Luckin endpoint is Streamable HTTP over POST. A GET request is the
+  // optional SSE listening channel in the MCP spec; returning 405 tells MCP
+  // clients that this server does not expose that optional channel.
+  if (req.method === 'GET') {
+    res.set('Allow', 'POST, OPTIONS');
+    return res.status(405).end();
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.set({
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id',
+    });
+    return res.status(204).end();
+  }
+
   const requestChunks = [];
   req.on('data', (chunk) => requestChunks.push(chunk));
   req.on('end', () => {
@@ -83,6 +100,9 @@ app.use((req, res) => {
     delete headers.authorization;
     delete headers.origin;
     delete headers.referer;
+    // Luckin requires both response modes to be advertised. Some MCP clients
+    // probe with only text/event-stream, which Luckin rejects with 405.
+    headers.accept = 'application/json, text/event-stream';
     headers.authorization = `Bearer ${TOKEN}`;
     headers.host = TARGET_HOST;
     if (requestBody.length > 0) headers['content-length'] = requestBody.length;
