@@ -42,12 +42,36 @@ const TOOL_METADATA = {
   },
 };
 
+function sanitizeJsonSchema(value) {
+  if (Array.isArray(value)) return value.map(sanitizeJsonSchema);
+  if (!value || typeof value !== 'object') return value;
+
+  const schema = {};
+  for (const [key, child] of Object.entries(value)) {
+    // These are Java/Spring implementation details from Luckin's gateway,
+    // not portable JSON Schema keywords accepted by ChatGPT's tool importer.
+    if (key === 'returnDirect') continue;
+    if (key === 'format' && (child === 'int32' || child === 'int64')) continue;
+    schema[key] = sanitizeJsonSchema(child);
+  }
+
+  // Luckin omits type on one nested object (switchProduct.subAttr). Lenient
+  // MCP clients accept it, while strict tool-schema importers reject it.
+  if (schema.properties && !schema.type) schema.type = 'object';
+  if (schema.items && !schema.type) schema.type = 'array';
+  return schema;
+}
+
 function addChatGptToolMetadata(payload) {
   if (!payload || !payload.result || !Array.isArray(payload.result.tools)) return payload;
 
   payload.result.tools = payload.result.tools.map((tool) => {
     const metadata = TOOL_METADATA[tool.name];
-    return metadata ? { ...tool, ...metadata } : tool;
+    const normalizedTool = {
+      ...tool,
+      inputSchema: sanitizeJsonSchema(tool.inputSchema),
+    };
+    return metadata ? { ...normalizedTool, ...metadata } : normalizedTool;
   });
   return payload;
 }
